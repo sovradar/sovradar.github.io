@@ -1,0 +1,4 @@
+anthropic==1.17.0
+cryptography==50.0.2
+pymupdf==2.0
+requests==2.34.2
