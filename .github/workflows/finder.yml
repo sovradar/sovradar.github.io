@@ -32,6 +32,7 @@ jobs:
         working-directory: finder
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           SOVRADAR_TENDER_KEY: ${{ secrets.SOVRADAR_TENDER_KEY }}
         run: python run_finder.py --days "${{ github.event.inputs.days || '3' }}"
       - name: Ergebnis speichern
@@ -41,3 +42,9 @@ jobs:
           git add tenders.enc.json
           git diff --cached --quiet || git commit -m "Ausschreibungen aktualisiert"
           git push
+      - name: Bei Konfigurationsfehler rot markieren
+        if: always()
+        working-directory: finder
+        env:
+          SOVRADAR_TENDER_KEY: ${{ secrets.SOVRADAR_TENDER_KEY }}
+        run: python -c "import run_finder as r,sys; s=r.load_state(); e=(s['runs'] or [{}])[0].get('config_error'); print(e or 'ok'); sys.exit(1 if e else 0)"

@@ -6,6 +6,7 @@ Souveränitätsebene) und speichert alles verschlüsselt in ../tenders.enc.json.
 
 Umgebungsvariablen:
   ANTHROPIC_API_KEY   API-Key (in GitHub als Secret hinterlegt)
+  ANTHROPIC_WORKSPACE_ID  nur nötig, wenn der Key keinem Workspace zugeordnet ist
   SOVRADAR_TENDER_KEY 32-Byte-Schlüssel (Base64) für die verschlüsselte Ablage
 
 Aufruf: python run_finder.py [--days 3] [--no-llm]
@@ -85,8 +86,13 @@ def search(days):
 
 
 # ---------------- KI-Bewertung ----------------
+class ConfigError(Exception):
+    """Fehler, die sich durch Wiederholen nicht beheben (Key, Workspace, Anfrageformat)."""
+
+
 def _json_call(client, model, prompt, schema, max_tokens, effort):
     """Ein Aufruf mit garantiert gültigem JSON (structured outputs); bis zu 3 Versuche."""
+    import anthropic
     last = None
     for attempt in range(3):
         try:
@@ -100,6 +106,8 @@ def _json_call(client, model, prompt, schema, max_tokens, effort):
             if r.stop_reason == "max_tokens":
                 raise RuntimeError("Antwort abgeschnitten (max_tokens)")
             return json.loads(next(b.text for b in r.content if b.type == "text"))
+        except (anthropic.AuthenticationError, anthropic.PermissionDeniedError, anthropic.BadRequestError, anthropic.NotFoundError) as e:
+            raise ConfigError(str(e)) from e
         except Exception as e:  # SDK wiederholt 429/5xx bereits selbst; hier zusätzlich Parse-/Abbruchfehler
             last = e
             time.sleep(3 * (attempt + 1))
@@ -166,13 +174,19 @@ def main():
     stats = {"at": now(), "days": args.days, "ted": n_ted, "bkms": n_bkms, "found": len(found), "new": new, "scored": 0, "deep": 0, "errors": 0}
     if not args.no_llm:
         import anthropic
-        client = anthropic.Anthropic()
+        ws = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip()
+        client = anthropic.Anthropic(default_headers={"anthropic-workspace-id": ws} if ws else None)
         # 1) Vorbewertung aller offenen Einträge (auch aus früheren, fehlgeschlagenen Läufen)
         pending = [t for t in tenders.values() if t.get("status") == "pending"]
         for i in range(0, len(pending), CHUNK):
             batch = pending[i:i + CHUNK]
             try:
                 res = score_batch(client, batch)
+            except ConfigError as e:
+                print("Abbruch der KI-Bewertung (Konfiguration prüfen, Einträge bleiben offen):", e)
+                stats["errors"] += 1
+                stats["config_error"] = str(e)[:300]
+                break
             except Exception as e:
                 print("Vorbewertung fehlgeschlagen, wird im nächsten Lauf wiederholt:", e)
                 stats["errors"] += 1
@@ -185,7 +199,7 @@ def main():
                          title_ai=r["title"], status="scored" if r["score"] < DEEP_MIN_SCORE else "deep_pending")
                 stats["scored"] += 1
         # 2) Tiefenanalyse inkl. Souveränitätsebene
-        todo = [t for t in tenders.values() if t.get("status") == "deep_pending"]
+        todo = [] if stats.get("config_error") else [t for t in tenders.values() if t.get("status") == "deep_pending"]
 
         def run(t):
             try:
