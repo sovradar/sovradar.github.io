@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from bkms_api import search_notices_bkms_multi
 from enrichment import extract_notice_fields, get_full_notice_text
-from prompts import DEEP_PROMPT, DEEP_SCHEMA, SCORING_PROMPT, SCORING_SCHEMA, SOV_CODES
+from prompts import DEEP_PROMPT, DEEP_SCHEMA, DEEP_VERSION, SCORING_PROMPT, SCORING_SCHEMA, SN_CONTEXT, SOV_CODES
 from servicenow_config import SERVICENOW_MODULES
 from ted_api import search_notices_multi_keywords
 from utils import deduplicate_notices
@@ -137,8 +137,9 @@ def deep_dive(client, n):
     if full:
         text += f"\n\nVollständiger Bekanntmachungstext (Quelle):\n{full}"
     codes = "\n".join(f"- {k}: {v}" for k, v in SOV_CODES.items())
-    dd = _json_call(client, SONNET, DEEP_PROMPT.format(codes=codes, notice=text), DEEP_SCHEMA, 6000, "medium")
+    dd = _json_call(client, SONNET, DEEP_PROMPT.format(codes=codes, notice=text, sn_context=SN_CONTEXT), DEEP_SCHEMA, 6000, "medium")
     dd["volltext"] = bool(full)
+    dd["version"] = DEEP_VERSION
     return dd
 
 
@@ -195,10 +196,16 @@ def main():
                 r = res.get(j)
                 if not r:
                     continue
-                t.update(score=r["score"], label=r["label"], modules=r["recommended_modules"], summary=r["summary"],
+                t.update(score=r["score"], label=r["label"], score_pre=r["score"], label_pre=r["label"], modules=r["recommended_modules"], summary=r["summary"],
                          title_ai=r["title"], status="scored" if r["score"] < DEEP_MIN_SCORE else "deep_pending")
                 stats["scored"] += 1
         # 2) Tiefenanalyse inkl. Souveränitätsebene
+        #    Analysen einer älteren Version neu erstellen (Score vorher auf die Vorbewertung zurücksetzen)
+        for t in tenders.values():
+            if t.get("deep") and t["deep"].get("version", 1) < DEEP_VERSION and t.get("status") == "done":
+                t["status"] = "deep_pending"
+                if "score_pre" in t:
+                    t["score"], t["label"] = t["score_pre"], t["label_pre"]
         todo = [] if stats.get("config_error") else [t for t in tenders.values() if t.get("status") == "deep_pending"]
 
         def run(t):

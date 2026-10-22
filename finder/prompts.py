@@ -64,6 +64,18 @@ SCORING_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Version der Tiefenanalyse: Erhöhen, wenn sich Prompt oder Kontext ändern; ältere Analysen werden dann neu erstellt.
+DEEP_VERSION = 2
+
+# Aktueller Stand souveräner ServiceNow-Betriebsoptionen (aus der SovRadar-Recherche, Stand 10/2026).
+# Wird der Tiefenanalyse mitgegeben, weil das Modellwissen hier veraltet sein kann.
+SN_CONTEXT = """Stand 10/2026 zu souveränen ServiceNow-Betriebsoptionen in Deutschland (verbindlich, geht eigenem Vorwissen vor):
+- ServiceNow-Standard-SaaS läuft in ServiceNow-eigenen Rechenzentren (u. a. Frankfurt); ServiceNow ist ein US-Unternehmen (CLOUD Act).
+- "Sovereign Partner Cloud": ServiceNow-Plattform von zertifizierten deutschen Partnern in deren deutschen Rechenzentren betrieben, inkl. Lizenz und Betrieb aus einer Hand: T-Systems (live seit 08.09.2026), noris network (zertifiziert seit 05.10.2026), STACKIT (Managed Service seit 2024); secunet angekündigt für voraussichtlich 2027 (Ziel VS-NfD).
+- "ServiceNow Private Stack" (seit 30.04.2026): Self-Hosting, der Kunde bzw. sein IT-Dienstleister betreibt ServiceNow selbst im eigenen Rechenzentrum, mit Funktionseinschränkungen; damit ist Betrieb im Behörden-/Landesrechenzentrum grundsätzlich möglich.
+- VS-NfD: Laut BSI-Leitfaden ist VS-Verarbeitung in der Public Cloud derzeit nur als IaaS möglich, nicht als SaaS; für ServiceNow mit VS-NfD bleibt nur Private Stack auf einer zugelassenen Infrastruktur oder ein künftiges zugelassenes Partnerangebot.
+Folgerung: Eine Anforderung "Betrieb im eigenen/Landes-Rechenzentrum" oder "nur deutsche Rechenzentren" schließt ServiceNow NICHT aus, sondern verlangt Private Stack bzw. Sovereign Partner Cloud. Bewerte das als Hürde (Aufwand, Funktionsumfang), nicht als K.-o.-Kriterium."""
+
 DEEP_PROMPT = """Analysiere die folgende Ausschreibung aus Sicht eines Beratungshauses, das vor allem ServiceNow-Einführungs- und Umsetzungsdienstleistungen anbietet.
 
 Ziel 1: ultra-knappe Erstbewertung zur Bid-Entscheidung. Erkenne schnell, ob sich eine weitere Beschäftigung lohnt oder ob die Ausschreibung verworfen werden sollte. Bewerte zusätzlich, ob sie für ein auch über ServiceNow aufgestelltes Beratungshaus strategisch interessant sein könnte, auch wenn sie kein klarer ServiceNow-Deal ist.
@@ -73,6 +85,8 @@ Ziel 2 (Souveränitätsebene): Prüfe, ob die Ausschreibung Anforderungen an dig
 relevanz: "hoch" = ausdrücklich gefordert und für den Zuschlag zentral; "mittel" = mehrere konkrete Anforderungen; "gering" = einzelne Hinweise (z. B. nur DSGVO/Datenhaltung EU); "keine" = nichts erkennbar.
 belege: je erkanntem Code ein kurzes Zitat (höchstens 25 Wörter) aus dem Text.
 servicenow_folge: 1 Satz, was das für einen ServiceNow-Betrieb bedeutet (z. B. Standard-SaaS ausgeschlossen, souveräner Partnerbetrieb oder Self-Hosting nötig, VS-NfD nur IaaS).
+
+{sn_context}
 
 Regeln:
 - Nur Stichpunkte, keine langen Fließtexte, so kurz wie möglich, aber verständlich.
