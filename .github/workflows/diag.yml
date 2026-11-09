@@ -1,0 +1,12 @@
+name: Diagnose TED-Abruf
+on: workflow_dispatch
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -s -o /tmp/a.pdf -w "plain: %{http_code} %{content_type} %{size_download}\n" -L "https://ted.europa.eu/de/notice/729042-2026/pdf" || true
+          head -c 400 /tmp/a.pdf; echo
+          curl -s -o /tmp/b.pdf -w "browser-UA: %{http_code} %{content_type} %{size_download}\n" -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "https://ted.europa.eu/de/notice/729042-2026/pdf" || true
+          head -c 400 /tmp/b.pdf; echo
+          curl -s -o /dev/null -w "api: %{http_code}\n" "https://api.ted.europa.eu/v3/notices/search" -H "Content-Type: application/json" -d '{"query":"publication-number=729042-2026","fields":["publication-number"]}' || true
