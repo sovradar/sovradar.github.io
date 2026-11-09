@@ -83,7 +83,7 @@ PROFIT_SIGNALS = {
 }
 
 # Version der Tiefenanalyse: Erhöhen, wenn sich Prompt oder Kontext ändern; ältere Analysen werden dann neu erstellt.
-DEEP_VERSION = 3
+DEEP_VERSION = 4
 
 # Aktueller Stand souveräner ServiceNow-Betriebsoptionen (aus der SovRadar-Recherche, Stand 10/2026).
 # Wird der Tiefenanalyse mitgegeben, weil das Modellwissen hier veraltet sein kann.

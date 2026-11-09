@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from bkms_api import search_notices_bkms_multi
-from enrichment import extract_notice_fields, get_full_notice_text
+from enrichment import TED_API_PREFIX, extract_notice_fields, get_full_notice_text
 from prompts import DEEP_PROMPT, DEEP_SCHEMA, DEEP_VERSION, PROFIT_SIGNALS, SCORING_PROMPT, SCORING_SCHEMA, SN_CONTEXT, SOV_CODES
 from servicenow_config import SERVICENOW_MODULES
 from ted_api import search_notices_multi_keywords
@@ -141,6 +141,7 @@ def deep_dive(client, n):
     prompt = DEEP_PROMPT.format(codes=codes, notice=text, sn_context=SN_CONTEXT, profit_signals=signals)
     dd = _json_call(client, SONNET, prompt, DEEP_SCHEMA, 12000, "medium")
     dd["volltext"] = bool(full)
+    dd["volltext_quelle"] = ("TED-API" if full.startswith(TED_API_PREFIX) else "PDF") if full else None
     dd["version"] = DEEP_VERSION
     add_volume(dd["profitabilitaet"])
     k = dd["profitabilitaet"]["kennzahlen"]
@@ -222,10 +223,14 @@ def main():
                 t.update(score=r["score"], label=r["label"], score_pre=r["score"], label_pre=r["label"], modules=r["recommended_modules"], summary=r["summary"],
                          title_ai=r["title"], status="scored" if r["score"] < DEEP_MIN_SCORE else "deep_pending")
                 stats["scored"] += 1
-        # 2) Tiefenanalyse inkl. Souveränitätsebene
-        #    Analysen einer älteren Version neu erstellen (Score vorher auf die Vorbewertung zurücksetzen)
+        # 2) Tiefenanalyse inkl. Souveränität und Profitabilität
+        #    Analysen einer älteren Version neu erstellen (Score vorher auf die Vorbewertung zurücksetzen).
+        #    Version 4 ergänzt nur die TED-API als Textquelle: Analysen der Version 3 mit Volltext bleiben gültig.
+        def outdated(d):
+            v = d.get("version", 1)
+            return v < DEEP_VERSION and (v < 3 or not d.get("volltext"))
         for t in tenders.values():
-            if t.get("deep") and t["deep"].get("version", 1) < DEEP_VERSION and t.get("status") == "done":
+            if t.get("deep") and outdated(t["deep"]) and t.get("status") == "done":
                 t["status"] = "deep_pending"
                 if "score_pre" in t:
                     t["score"], t["label"] = t["score_pre"], t["label_pre"]
