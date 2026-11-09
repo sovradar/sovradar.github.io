@@ -1,6 +1,6 @@
 """Wöchentliche Kurzübersicht der neuen Ausschreibungen per Mail.
 
-Inhalt bewusst knapp (Titel, Auftraggeber, Frist, Bewertung); Details nur per Link in SovRadar
+Inhalt bewusst knapp (Titel, Auftraggeber, Frist, Bewertung, Souveränität, Profitabilität); Details nur per Link in SovRadar
 (mit Login). Empfänger stehen als BCC in der Mail, damit sie die Adressen der anderen nicht sehen.
 
 Umgebungsvariablen:
@@ -72,11 +72,12 @@ def build(items, days, total_new):
         d = t["deep"]
         title = t.get("title_ai") or t.get("title") or ""
         f = t.get("deadline") if frist(t) else "unbekannt"
-        lines += [f"- {title}", f"  {buyer(t)} | Frist {f} | {d['gesamtbewertung']} | Souveränität {d['souveraenitaet']['relevanz']}", f"  {link(t)}", ""]
+        prof = (d.get("profitabilitaet") or {}).get("stufe", "unklar")
+        lines += [f"- {title}", f"  {buyer(t)} | Frist {f} | {d['gesamtbewertung']} | Souveränität {d['souveraenitaet']['relevanz']} | Profitabilität {prof}", f"  {link(t)}", ""]
         rows.append(f"""<tr><td style="padding:10px 0;border-top:1px solid #e3e7e8">
 <a href="{html.escape(link(t))}" style="color:#0a5655;font-weight:600;text-decoration:none">{html.escape(title)}</a><br>
 <span style="color:#4a5658;font-size:13px">{html.escape(buyer(t))}</span><br>
-<span style="font-size:12px;color:#4a5658">Frist {html.escape(str(f))} · <b>{d['gesamtbewertung']}</b> · Souveränität {d['souveraenitaet']['relevanz']}</span>
+<span style="font-size:12px;color:#4a5658">Frist {html.escape(str(f))} · <b>{d['gesamtbewertung']}</b> · Souveränität {d['souveraenitaet']['relevanz']} · Profitabilität {prof}</span>
 </td></tr>""")
     lines += ["Details, Begründungen und passende Cloud-Anbieter: in SovRadar (Login erforderlich).", SITE]
     body_html = f"""<div style="font-family:Segoe UI,Arial,sans-serif;color:#1c2526;max-width:640px">

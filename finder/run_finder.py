@@ -1,7 +1,7 @@
 """SovRadar-Ausschreibungsfinder.
 
 Sucht in TED und BKMS mit den ServiceNow-Modul-Suchbegriffen des bisherigen Vergabe-Finders,
-bewertet neue Treffer mit Claude (Haiku: Vorbewertung, Sonnet: Tiefenanalyse inkl.
+bewertet neue Treffer mit Claude (Haiku: Vorbewertung, Sonnet: Tiefenanalyse inkl. Profitabilität und
 Souveränitätsebene) und speichert alles verschlüsselt in ../tenders.enc.json.
 
 Umgebungsvariablen:
@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from bkms_api import search_notices_bkms_multi
 from enrichment import extract_notice_fields, get_full_notice_text
-from prompts import DEEP_PROMPT, DEEP_SCHEMA, DEEP_VERSION, SCORING_PROMPT, SCORING_SCHEMA, SN_CONTEXT, SOV_CODES
+from prompts import DEEP_PROMPT, DEEP_SCHEMA, DEEP_VERSION, PROFIT_SIGNALS, SCORING_PROMPT, SCORING_SCHEMA, SN_CONTEXT, SOV_CODES
 from servicenow_config import SERVICENOW_MODULES
 from ted_api import search_notices_multi_keywords
 from utils import deduplicate_notices
@@ -137,10 +137,33 @@ def deep_dive(client, n):
     if full:
         text += f"\n\nVollständiger Bekanntmachungstext (Quelle):\n{full}"
     codes = "\n".join(f"- {k}: {v}" for k, v in SOV_CODES.items())
-    dd = _json_call(client, SONNET, DEEP_PROMPT.format(codes=codes, notice=text, sn_context=SN_CONTEXT), DEEP_SCHEMA, 6000, "medium")
+    signals = "\n".join(f"- {k}: {v}" for k, v in PROFIT_SIGNALS.items())
+    prompt = DEEP_PROMPT.format(codes=codes, notice=text, sn_context=SN_CONTEXT, profit_signals=signals)
+    dd = _json_call(client, SONNET, prompt, DEEP_SCHEMA, 12000, "medium")
     dd["volltext"] = bool(full)
     dd["version"] = DEEP_VERSION
+    add_volume(dd["profitabilitaet"])
+    k = dd["profitabilitaet"]["kennzahlen"]
+    if k["auftragswert_eur"] > 0 and (n.get("estimated_value") or "").strip() in ("", "N/A", "Nicht angegeben", "unbekannt"):
+        n["estimated_value"] = f"{k['auftragswert_eur']:,} EUR".replace(",", ".") + (" (Höchstwert)" if k["wert_art"] == "hoechstwert" else "")
     return dd
+
+
+def add_volume(p):
+    """Beratungsvolumen aus den Kennzahlen der KI; gerechnet wird im Code, damit die Zahl nachvollziehbar bleibt."""
+    k = p["kennzahlen"]
+    wert, monate, anteil = k["auftragswert_eur"], k["grundlaufzeit_monate"], k["beratungsanteil_prozent"]
+    if wert <= 0:
+        p["volumen"] = None
+        return
+    anteil_bekannt = 0 <= anteil <= 100
+    beratung = wert * (anteil if anteil_bekannt else 100) / 100
+    p["volumen"] = {
+        "beratung_eur": round(beratung),
+        "pro_jahr_eur": round(beratung * 12 / monate) if monate > 0 else None,
+        "anteil_bekannt": anteil_bekannt,   # False: Lizenzanteil nicht abschätzbar, Wert evtl. inkl. Lizenzen
+        "hoechstwert": k["wert_art"] == "hoechstwert",
+    }
 
 
 def apply_verdict(t):
