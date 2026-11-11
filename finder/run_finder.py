@@ -1,8 +1,8 @@
 """SovRadar-Ausschreibungsfinder.
 
 Sucht in TED und BKMS mit den ServiceNow-Modul-Suchbegriffen des bisherigen Vergabe-Finders,
-bewertet neue Treffer mit Claude (Haiku: Vorbewertung, Sonnet: Tiefenanalyse inkl. Profitabilität und
-Souveränitätsebene) und speichert alles verschlüsselt in ../tenders.enc.json.
+bewertet neue Treffer mit Claude (Haiku: Vorbewertung mit Commercial-Pre-Screen, Sonnet: Tiefenanalyse inkl.
+Souveränität und Commercial Fit), leitet daraus die Bid-Empfehlung ab (Commercial Gate) und speichert alles verschlüsselt in ../tenders.enc.json.
 
 Umgebungsvariablen:
   ANTHROPIC_API_KEY   API-Key (in GitHub als Secret hinterlegt)
@@ -24,7 +24,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from bkms_api import search_notices_bkms_multi
 from enrichment import TED_API_PREFIX, extract_notice_fields, get_full_notice_text
-from prompts import DEEP_PROMPT, DEEP_SCHEMA, DEEP_VERSION, PROFIT_SIGNALS, SCORING_PROMPT, SCORING_SCHEMA, SN_CONTEXT, SOV_CODES
+from prompts import (COMMERCIAL_CRITERIA, DEEP_PROMPT, DEEP_SCHEMA, DEEP_VERSION, HARD_GATES, MARGIN_ACCELERATORS, MARGIN_KILLERS,
+                     PRESCREEN_FLAGS, PRESCREEN_GAPS, SCORING_PROMPT, SCORING_SCHEMA, SN_CONTEXT, SOV_CODES)
 from servicenow_config import SERVICENOW_MODULES
 from ted_api import search_notices_multi_keywords
 from utils import deduplicate_notices
@@ -120,7 +121,10 @@ def score_batch(client, items):
     for i, n in enumerate(items):
         lines.append(f"ID:{i} | Titel: {n.get('title', '')} | Auftraggeber: {n.get('buyer', '')} | Modul-Treffer: {n.get('sn_module', 'unbekannt')} | "
                      f"Wert: {n.get('estimated_value', 'unbekannt')} | Beschreibung: {(n.get('description') or '')[:600]}")
-    out = _json_call(client, HAIKU, SCORING_PROMPT.format(modules=modules, notices="\n\n".join(lines)), SCORING_SCHEMA, 8000, "low")
+    flags = "\n".join(f"- {k}: {v}" for k, v in PRESCREEN_FLAGS.items())
+    gaps = ", ".join(f"{k} ({v})" for k, v in PRESCREEN_GAPS.items())
+    prompt = SCORING_PROMPT.format(modules=modules, notices="\n\n".join(lines), flags=flags, gaps=gaps)
+    out = _json_call(client, HAIKU, prompt, SCORING_SCHEMA, 8000, "low")
     return {r["id"]: r for r in out["results"] if 0 <= r["id"] < len(items)}
 
 
@@ -137,14 +141,15 @@ def deep_dive(client, n):
     if full:
         text += f"\n\nVollständiger Bekanntmachungstext (Quelle):\n{full}"
     codes = "\n".join(f"- {k}: {v}" for k, v in SOV_CODES.items())
-    signals = "\n".join(f"- {k}: {v}" for k, v in PROFIT_SIGNALS.items())
-    prompt = DEEP_PROMPT.format(codes=codes, notice=text, sn_context=SN_CONTEXT, profit_signals=signals)
+    lst = lambda d: "\n".join(f"- {k}: {v}" for k, v in d.items())
+    prompt = DEEP_PROMPT.format(codes=codes, notice=text, sn_context=SN_CONTEXT, criteria=lst(COMMERCIAL_CRITERIA),
+                                accelerators=lst(MARGIN_ACCELERATORS), killers=lst(MARGIN_KILLERS))
     dd = _json_call(client, SONNET, prompt, DEEP_SCHEMA, 12000, "medium")
     dd["volltext"] = bool(full)
     dd["volltext_quelle"] = ("TED-API" if full.startswith(TED_API_PREFIX) else "PDF") if full else None
     dd["version"] = DEEP_VERSION
-    add_volume(dd["profitabilitaet"])
-    k = dd["profitabilitaet"]["kennzahlen"]
+    add_volume(dd["commercial"])
+    k = dd["commercial"]["kennzahlen"]
     if k["auftragswert_eur"] > 0 and (n.get("estimated_value") or "").strip() in ("", "N/A", "Nicht angegeben", "unbekannt"):
         n["estimated_value"] = f"{k['auftragswert_eur']:,} EUR".replace(",", ".") + (" (Höchstwert)" if k["wert_art"] == "hoechstwert" else "")
     return dd
@@ -165,6 +170,70 @@ def add_volume(p):
         "anteil_bekannt": anteil_bekannt,   # False: Lizenzanteil nicht abschätzbar, Wert evtl. inkl. Lizenzen
         "hoechstwert": k["wert_art"] == "hoechstwert",
     }
+
+
+# ---------------- Commercial Fit und Commercial Gate ----------------
+# Regeln bewusst im Code (nicht im Modell), damit sie nachvollziehbar sind und ohne Neuanalyse angepasst werden können.
+CRIT_POINTS = {"positiv": 100, "neutral": 55, "negativ": 15}   # "unklar" zählt nicht mit
+ACCEL_BONUS, KILLER_MALUS = 5, 5                                # je belegtem Accelerator bzw. weichem Killer
+CF_ATTRACTIVE, CF_MARGIN_RISK = 70, 45                          # Grenzen der Einstufung
+SOLUTION_NO_BID, SOLUTION_MUST = 60, 80                         # Grenzen für den Solution Fit (Score)
+
+
+def commercial_fit(c):
+    """Commercial Fit 0–100, Confidence und Einstufung ATTRACTIVE / SELECTIVE / MARGIN RISK / OFFEN."""
+    known = [CRIT_POINTS[v["bewertung"]] for v in c["kriterien"].values() if v["bewertung"] in CRIT_POINTS]
+    kill = [k["code"] for k in c["killers"]]
+    hard = sorted({k for k in kill if k in HARD_GATES})
+    soft = len({k for k in kill if k not in HARD_GATES})
+    accel = len({a["code"] for a in c["accelerators"]})
+    fit = None
+    if known:
+        fit = round(sum(known) / len(known) + ACCEL_BONUS * accel - KILLER_MALUS * soft)
+        fit = max(0, min(100, fit))
+    confidence = "hoch" if len(known) >= 5 else "mittel" if len(known) >= 3 else "gering"
+    if hard:
+        klasse = "MARGIN RISK"
+    elif confidence == "gering" or fit is None:
+        klasse = "OFFEN"
+    elif fit >= CF_ATTRACTIVE:
+        klasse = "ATTRACTIVE"
+    elif fit < CF_MARGIN_RISK:
+        klasse = "MARGIN RISK"
+    else:
+        klasse = "SELECTIVE"
+    return {"fit": fit, "confidence": confidence, "klasse": klasse, "bewertet": len(known), "harte_gates": hard}
+
+
+def apply_gate(t):
+    """Commercial Gate: Solution Fit (Score) und Commercial Fit ergeben die Bid-Empfehlung MUST PURSUE / SELECTIVE / NO-BID."""
+    solution = t.get("score") or 0
+    d = t.get("deep") or {}
+    c = d.get("commercial")
+    if not c:
+        t["gate"] = {"empfehlung": "NO-BID" if solution < SOLUTION_NO_BID else "SELECTIVE", "review": False, "review_grund": "",
+                     "grund": "Solution Fit zu gering (nur Vorbewertung)." if solution < SOLUTION_NO_BID else "Noch ohne Commercial Fit."}
+        return
+    cf = commercial_fit(c)
+    review, review_grund = False, ""
+    if solution < SOLUTION_NO_BID:
+        emp, grund = "NO-BID", f"Solution Fit {solution} zu gering ({d.get('gesamtbewertung', '')})."
+    elif cf["klasse"] == "MARGIN RISK":
+        emp = "NO-BID"
+        grund = (f"Hartes Gate: {', '.join(MARGIN_KILLERS[h] for h in cf['harte_gates'])}." if cf["harte_gates"]
+                 else f"Commercial Fit {cf['fit']} unter {CF_MARGIN_RISK} trotz Solution Fit {solution}.")
+        if c.get("strategisch"):
+            review, review_grund = True, "Strategische Ausnahme prüfen: " + c.get("strategisch_begruendung", "")
+    elif cf["klasse"] == "OFFEN":
+        emp, grund = "SELECTIVE", f"Solution Fit {solution}, Commercial Fit wegen Datenlücken nicht belastbar ({cf['bewertet']} von 6 Kriterien bewertbar)."
+        review, review_grund = True, "Datenlücken: Vergabeunterlagen prüfen (Preisblatt, Leistungsbeschreibung, Vertrag)."
+    elif cf["klasse"] == "ATTRACTIVE" and solution >= SOLUTION_MUST:
+        emp, grund = "MUST PURSUE", f"Solution Fit {solution} und Commercial Fit {cf['fit']} (ATTRACTIVE), kein hartes Gate."
+    elif cf["klasse"] == "ATTRACTIVE":
+        emp, grund = "SELECTIVE", f"Commercial Fit {cf['fit']} (ATTRACTIVE), aber Solution Fit {solution} unter {SOLUTION_MUST}."
+    else:
+        emp, grund = "SELECTIVE", f"Solution Fit {solution}, Commercial Fit {cf['fit']} (SELECTIVE): Bid nur mit klaren Mitigations, Partner- oder Staffing-Modell."
+    t["gate"] = {"empfehlung": emp, "grund": grund, "review": review, "review_grund": review_grund, **cf}
 
 
 def apply_verdict(t):
@@ -221,16 +290,25 @@ def main():
                 if not r:
                     continue
                 t.update(score=r["score"], label=r["label"], score_pre=r["score"], label_pre=r["label"], modules=r["recommended_modules"], summary=r["summary"],
-                         title_ai=r["title"], status="scored" if r["score"] < DEEP_MIN_SCORE else "deep_pending")
+                         title_ai=r["title"], red_flags=r["red_flags"], datenluecken=r["datenluecken"],
+                         status="scored" if r["score"] < DEEP_MIN_SCORE else "deep_pending")
                 stats["scored"] += 1
-        # 2) Tiefenanalyse inkl. Souveränität und Profitabilität
-        #    Analysen einer älteren Version neu erstellen (Score vorher auf die Vorbewertung zurücksetzen).
-        #    Version 4 ergänzt nur die TED-API als Textquelle: Analysen der Version 3 mit Volltext bleiben gültig.
-        def outdated(d):
-            v = d.get("version", 1)
-            return v < DEEP_VERSION and (v < 3 or not d.get("volltext"))
+        # 1b) Pre-Screen für ältere Einträge nachholen (nur red_flags/datenluecken übernehmen, Scores bleiben unverändert)
+        missing = [] if stats.get("config_error") else [t for t in tenders.values() if t.get("status") in ("scored", "done") and "red_flags" not in t]
+        for i in range(0, len(missing), CHUNK):
+            batch = missing[i:i + CHUNK]
+            try:
+                res = score_batch(client, batch)
+            except Exception as e:
+                print("Pre-Screen-Nachtrag fehlgeschlagen, wird wiederholt:", e)
+                continue
+            for j, t in enumerate(batch):
+                if res.get(j):
+                    t.update(red_flags=res[j]["red_flags"], datenluecken=res[j]["datenluecken"])
+        # 2) Tiefenanalyse inkl. Souveränität und Commercial Fit
+        #    Analysen einer älteren Version neu erstellen (Score vorher auf die Vorbewertung zurücksetzen)
         for t in tenders.values():
-            if t.get("deep") and outdated(t["deep"]) and t.get("status") == "done":
+            if t.get("deep") and t["deep"].get("version", 1) < DEEP_VERSION and t.get("status") == "done":
                 t["status"] = "deep_pending"
                 if "score_pre" in t:
                     t["score"], t["label"] = t["score_pre"], t["label_pre"]
@@ -250,6 +328,11 @@ def main():
             ok = list(ex.map(run, todo))
         stats["deep"] = sum(ok)
         stats["errors"] += ok.count(False)
+
+    # 3) Commercial Gate für alle Einträge neu berechnen (deterministisch, auch nach Regeländerungen ohne Neuanalyse)
+    for t in tenders.values():
+        if t.get("status") in ("scored", "done"):
+            apply_gate(t)
 
     # Aufräumen: Einträge älter als KEEP_DAYS entfernen
     cutoff = (datetime.now(timezone.utc) - timedelta(days=KEEP_DAYS)).isoformat()

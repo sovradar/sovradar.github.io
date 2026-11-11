@@ -1,6 +1,6 @@
 """Wöchentliche Kurzübersicht der neuen Ausschreibungen per Mail.
 
-Inhalt bewusst knapp (Titel, Auftraggeber, Frist, Bewertung, Souveränität, Profitabilität); Details nur per Link in SovRadar
+Inhalt bewusst knapp (Titel, Auftraggeber, Frist, Bid-Empfehlung, Commercial Fit, Souveränität); Details nur per Link in SovRadar
 (mit Login). Empfänger stehen als BCC in der Mail, damit sie die Adressen der anderen nicht sehen.
 
 Umgebungsvariablen:
@@ -27,6 +27,17 @@ from run_finder import load_state
 
 SITE = "https://sovradar.github.io/"
 RANK = {"hoch": 3, "mittel": 2, "gering": 1, "keine": 0}
+EMP_RANK = {"MUST PURSUE": 3, "SELECTIVE": 2, "NO-BID": 1}
+
+
+def gate(t):
+    return t.get("gate") or {}
+
+
+def bid_relevant(t):
+    """Wie der Standardfilter der App: alles außer NO-BID, Management-Review-Fälle immer."""
+    g = gate(t)
+    return g.get("empfehlung") in ("MUST PURSUE", "SELECTIVE") or g.get("review")
 
 
 def buyer(t):
@@ -42,7 +53,7 @@ def frist(t):
 
 
 def select(state, days):
-    """Neu gefunden in den letzten `days` Tagen, Standardfilter der App (Souveränitätsbezug, ab Optional, Frist offen)."""
+    """Neu gefunden in den letzten `days` Tagen, Standardfilter der App (Souveränitätsbezug, Bid-Empfehlung nicht NO-BID oder Management Review, Frist offen)."""
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     today = datetime.now().date()
     out = []
@@ -51,9 +62,9 @@ def select(state, days):
         sov = (d.get("souveraenitaet") or {}).get("relevanz", "keine")
         f = frist(t)
         if ((t.get("first_seen") or "") >= since and t.get("status") == "done" and RANK.get(sov, 0) >= 1
-                and (t.get("score") or 0) >= 60 and (f is None or f >= today)):
+                and bid_relevant(t) and (f is None or f >= today)):
             out.append(t)
-    return sorted(out, key=lambda t: (-RANK[t["deep"]["souveraenitaet"]["relevanz"]], -(t.get("score") or 0)))
+    return sorted(out, key=lambda t: (-EMP_RANK.get(gate(t).get("empfehlung"), 0), -RANK[t["deep"]["souveraenitaet"]["relevanz"]], -(t.get("score") or 0)))
 
 
 def link(t):
@@ -66,23 +77,25 @@ def build(items, days, total_new):
     subject = f"SovRadar: {len(items)} neue Ausschreibung{'en' if len(items) != 1 else ''} mit ServiceNow- und Souveränitätsbezug" if items \
         else "SovRadar: diese Woche keine neuen Treffer"
     lines = [f"SovRadar – Wochenübersicht vom {week}", "",
-             f"In den letzten {days} Tagen wurden {total_new} Ausschreibungen neu gefunden; {len(items)} davon haben ServiceNow-Potenzial (ab \"Optional\") und Souveränitätsbezug.", ""]
+             f"In den letzten {days} Tagen wurden {total_new} Ausschreibungen neu gefunden; {len(items)} davon haben eine Bid-Empfehlung (MUST PURSUE, SELECTIVE oder Management Review) und Souveränitätsbezug.", ""]
     rows = []
     for t in items:
         d = t["deep"]
         title = t.get("title_ai") or t.get("title") or ""
         f = t.get("deadline") if frist(t) else "unbekannt"
-        prof = (d.get("profitabilitaet") or {}).get("stufe", "unklar")
-        lines += [f"- {title}", f"  {buyer(t)} | Frist {f} | {d['gesamtbewertung']} | Souveränität {d['souveraenitaet']['relevanz']} | Profitabilität {prof}", f"  {link(t)}", ""]
+        g = gate(t)
+        emp = g.get("empfehlung", "") + (" · Management Review" if g.get("review") else "")
+        cf = f"Commercial Fit {g['fit']} ({g['klasse']})" if g.get("fit") is not None else f"Commercial Fit {g.get('klasse', 'offen')}"
+        lines += [f"- {title}", f"  {buyer(t)} | Frist {f} | {emp} | {cf} | Souveränität {d['souveraenitaet']['relevanz']}", f"  {link(t)}", ""]
         rows.append(f"""<tr><td style="padding:10px 0;border-top:1px solid #e3e7e8">
 <a href="{html.escape(link(t))}" style="color:#0a5655;font-weight:600;text-decoration:none">{html.escape(title)}</a><br>
 <span style="color:#4a5658;font-size:13px">{html.escape(buyer(t))}</span><br>
-<span style="font-size:12px;color:#4a5658">Frist {html.escape(str(f))} · <b>{d['gesamtbewertung']}</b> · Souveränität {d['souveraenitaet']['relevanz']} · Profitabilität {prof}</span>
+<span style="font-size:12px;color:#4a5658">Frist {html.escape(str(f))} · <b>{html.escape(emp)}</b> · {html.escape(cf)} · Souveränität {d['souveraenitaet']['relevanz']}</span>
 </td></tr>""")
     lines += ["Details, Begründungen und passende Cloud-Anbieter: in SovRadar (Login erforderlich).", SITE]
     body_html = f"""<div style="font-family:Segoe UI,Arial,sans-serif;color:#1c2526;max-width:640px">
 <p style="font-size:18px;font-weight:600;margin:0 0 4px">SovRadar · Wochenübersicht</p>
-<p style="color:#4a5658;font-size:13px;margin:0 0 14px">{week} · {total_new} neu gefunden, {len(items)} mit ServiceNow-Potenzial und Souveränitätsbezug</p>
+<p style="color:#4a5658;font-size:13px;margin:0 0 14px">{week} · {total_new} neu gefunden, {len(items)} mit Bid-Empfehlung und Souveränitätsbezug</p>
 {'<table style="width:100%;border-collapse:collapse">' + ''.join(rows) + '</table>' if rows else '<p>Diese Woche keine neuen Treffer, die die Standardfilter erfüllen.</p>'}
 <p style="font-size:13px;color:#4a5658;margin-top:16px">Details, Begründungen und passende Cloud-Anbieter in <a href="{SITE}" style="color:#0a5655">SovRadar</a> (Login erforderlich). Interne Einschätzung, keine Zertifizierung.</p>
 </div>"""

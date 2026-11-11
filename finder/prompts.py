@@ -2,7 +2,7 @@
 
 Die ServiceNow-Logik (Vorbewertung, Score-Regeln, Tiefenanalyse) ist aus dem bisherigen
 Vergabe-Finder übernommen (servicenow_config.py: SN_SCORING_PROMPT, SONNET_DEEP_DIVE_PROMPT);
-neu sind die Souveränitäts- und die Profitabilitätsebene in der Tiefenanalyse.
+neu sind die Souveränitätsebene und der Commercial Fit (Pre-Screen in der Vorbewertung, Kriterien in der Tiefenanalyse).
 """
 
 # Erkennbare Souveränitätsanforderungen (fester Code-Satz, die App ordnet sie SovRadar-Kriterien zu)
@@ -19,6 +19,55 @@ SOV_CODES = {
     "OPEN_SOURCE": "Open Source oder offene Standards gefordert/bevorzugt",
     "DVC": "Deutsche Verwaltungscloud bzw. Bezug über öffentliche IT-Dienstleister/Rahmenverträge",
 }
+
+# Commercial Fit (Konzept „Management Story“): sechs Kriterien mit Bewertungsregeln.
+# Die App (views/Tenders.tsx, views/Method.tsx) zeigt dieselben Kriterien in dieser Reihenfolge.
+COMMERCIAL_CRITERIA = {
+    "standardisierung": "Standardisierung: Standard-ServiceNow und wiederverwendbare Assets statt Individualentwicklung. "
+                        "positiv: weitgehend mit Standardfunktionen lösbar; neutral: Standard mit moderater Konfiguration; "
+                        "negativ: überwiegend Individualentwicklung bzw. Custom Apps",
+    "delivery_complexity": "Delivery Complexity: Scope, Anzahl Module, Integrationen, Migrationen, Legacy-Systeme. "
+                           "positiv: klar abgegrenzt, wenige Module und Schnittstellen; neutral: mittlerer Umfang; "
+                           "negativ: viele Schnittstellen, komplexe Migration oder Legacy-Ablösung",
+    "staffing_intensity": "Staffing Intensity: Anzahl und Seniorität der Rollen, Spezialprofile, Onsite- und Security-Vorgaben. "
+                          "positiv: übliche Profile, überwiegend remote; neutral: einzelne Spezialprofile oder teilweise vor Ort; "
+                          "negativ: viele Senior- oder Spezialprofile, benannte Personen, hohe Vor-Ort-Pflicht oder Sicherheitsüberprüfung (Ü2/Ü3)",
+    "preisgewichtung": "Preisgewichtung: Qualitäts- versus Preisdominanz in der Zuschlagsentscheidung. "
+                       "positiv: Qualität zählt mindestens 50 %; neutral: Preis 50–69 %; negativ: Preis 70–100 % oder Zuschlag nur nach Preis",
+    "vertragsrisiko": "Vertragsrisiko: Festpreis, unklarer Scope, SLA, Haftung und Vertragsstrafen. "
+                      "positiv: Abrechnung nach Aufwand, übliche Bedingungen; neutral: Festpreis mit klarem Scope oder Standard-SLA (z. B. EVB-IT); "
+                      "negativ: Festpreis bei unklarem Scope, harte SLA, Pönalen oder verschärfte Haftung",
+    "recurring_revenue": "Recurring Revenue: mehrjährige Laufzeit, Betrieb, AMS und Weiterentwicklung. "
+                         "positiv: mehrjähriger Betrieb, AMS, Weiterentwicklung oder Verlängerungsoptionen; "
+                         "neutral: Folgeaufträge plausibel, aber nicht genannt; negativ: klar einmaliges Vorhaben",
+}
+MARGIN_ACCELERATORS = {
+    "STANDARD": "Hoher Standardisierungs- und Wiederverwendungsgrad",
+    "WENIG_AUFWAND": "Geringer Customizing-, Integrations- und Migrationsaufwand",
+    "MANAGED_SERVICE": "Managed Service oder mehrjährige Betriebsleistung",
+    "QUALITAET": "Qualität dominiert den Zuschlag",
+    "SOUVERAENITAET": "Souveränitätsanforderungen schaffen Differenzierung",
+}
+MARGIN_KILLERS = {
+    "CUSTOM_LEGACY": "Hoher Custom-Development- oder Legacy-Anteil",
+    "SCHNITTSTELLEN_MIGRATION": "Viele Schnittstellen und komplexe Migration",
+    "ONSITE_NAMED": "Hoher Onsite- oder Named-Resource-Bedarf",
+    "FESTPREIS_UNKLAR": "Festpreis bei unklarem Scope",
+    "SLA_POENALEN": "Harte SLA oder Pönalen",
+    "PREISDOMINANZ": "Preisdominanz (Preis zählt 70 % oder mehr)",
+    "BODY_LEASING": "Reine Ressourcenbereitstellung (Body Leasing)",
+}
+# Margin Killer, die allein zur Einstufung MARGIN RISK führen (harte Gates)
+HARD_GATES = ("FESTPREIS_UNKLAR", "PREISDOMINANZ", "BODY_LEASING")
+# Früher Pre-Screen in der Vorbewertung: offensichtliche Red Flags und fehlende Angaben aus Kurztext und Metadaten
+PRESCREEN_FLAGS = {
+    "FESTPREIS": "Festpreis bzw. Pauschale erkennbar",
+    "ONSITE": "Hoher Vor-Ort-Anteil erkennbar",
+    "BODY_LEASING": "Reine Personal- bzw. Ressourcenbereitstellung",
+    "PREISDOMINANZ": "Zuschlag überwiegend oder nur nach Preis",
+    "CUSTOM_LEGACY": "Individualentwicklung oder Legacy-Ablösung im Vordergrund",
+}
+PRESCREEN_GAPS = {"WERT": "Auftragswert", "LAUFZEIT": "Laufzeit", "PREISGEWICHT": "Preisgewichtung", "LEISTUNGSART": "Leistungsart (Werk-/Dienstvertrag)"}
 
 SCORING_PROMPT = """Du bist ein erfahrener Lösungsarchitekt für ServiceNow. Du kennst alle Plattformfunktionen im Detail.
 Unser Beratungshaus ist spezialisiert auf folgende Module:
@@ -38,6 +87,10 @@ Score-Regeln (ServiceNow-spezifisch):
 recommended_modules: Module aus der Liste oben, die am besten passen (leer, wenn nichts passt).
 title: kurzer, sprechender Titel (5–8 Wörter), falls der vorhandene Titel nichtssagend ist, sonst der vorhandene Titel.
 summary: 1–2 Sätze zur strategischen Begründung.
+Früher Commercial-Pre-Screen (nur aus Kurztext und Metadaten, kein Margenwert):
+red_flags: offensichtliche wirtschaftliche Warnsignale, nur wenn im Text erkennbar. Erlaubte Codes:
+{flags}
+datenluecken: welche dieser Angaben fehlen: {gaps}
 Gib für jede Vergabe genau ein Ergebnis zurück; "id" ist die ID aus der Liste."""
 
 SCORING_SCHEMA = {
@@ -54,8 +107,10 @@ SCORING_SCHEMA = {
                     "recommended_modules": {"type": "array", "items": {"type": "string"}},
                     "title": {"type": "string"},
                     "summary": {"type": "string"},
+                    "red_flags": {"type": "array", "items": {"type": "string", "enum": list(PRESCREEN_FLAGS)}},
+                    "datenluecken": {"type": "array", "items": {"type": "string", "enum": list(PRESCREEN_GAPS)}},
                 },
-                "required": ["id", "score", "label", "recommended_modules", "title", "summary"],
+                "required": ["id", "score", "label", "recommended_modules", "title", "summary", "red_flags", "datenluecken"],
                 "additionalProperties": False,
             },
         }
@@ -64,26 +119,8 @@ SCORING_SCHEMA = {
     "additionalProperties": False,
 }
 
-# Profitabilitätssignale mit Bewertungsregeln (die App zeigt sie in dieser Reihenfolge)
-PROFIT_SIGNALS = {
-    "beratungsvolumen": "Beratungsvolumen pro Jahr: Auftragswert ohne Lizenz-/Hardwareanteil, geteilt durch die Grundlaufzeit. "
-                        "positiv ab ca. 500.000 EUR/Jahr, neutral 100.000–500.000, negativ darunter; unklar ohne Wertangabe",
-    "preisgewicht": "Gewicht des Preises in den Zuschlagskriterien. positiv: Qualität (Konzept, Team, Referenzen) zählt mindestens 50 %; "
-                    "neutral: Preis 50–69 %; negativ: Preis 70–100 % oder Zuschlag nur nach Preis",
-    "abrechnung": "Abrechnungsart. positiv: nach Aufwand (Tagessätze, Dienstvertrag); neutral: Festpreis mit klar abgegrenztem Umfang oder gemischt; "
-                  "negativ: Pauschalfestpreis/Werkvertrag mit unklarem oder offenem Umfang",
-    "umsatzzusage": "Zugesagter Umsatz. positiv: festes Projekt oder garantierte Mindestabnahme; neutral: Rahmenvertrag mit einem Partner ohne Mindestabnahme; "
-                    "negativ: nur Höchstwert/Obergrenze bei Rahmenvertrag mit mehreren Partnern und erneutem Wettbewerb je Abruf",
-    "reisekosten": "Reisekosten. positiv: werden gesondert erstattet oder Leistung überwiegend remote; neutral: nicht geregelt; "
-                   "negativ: Reisekosten/Reisezeiten sind mit dem Tagessatz bzw. Preis abgegolten bei regelmäßiger Vor-Ort-Pflicht",
-    "vertragsstrafen": "Vertragsstrafen und Haftung. positiv: keine besonderen Regelungen; neutral: übliche Regelungen (z. B. EVB-IT-Standard); "
-                       "negativ: hohe Vertragsstrafen, verschärfte Haftung oder harte Termine mit Abzügen, besonders bei Festpreis",
-    "folgegeschaeft": "Folgegeschäft. positiv: Betrieb, Wartung, Weiterentwicklung oder Verlängerungsoptionen enthalten; "
-                      "neutral: Folgeaufträge plausibel, aber nicht genannt; negativ: klar einmaliges, abgeschlossenes Vorhaben",
-}
-
 # Version der Tiefenanalyse: Erhöhen, wenn sich Prompt oder Kontext ändern; ältere Analysen werden dann neu erstellt.
-DEEP_VERSION = 4
+DEEP_VERSION = 5
 
 # Aktueller Stand souveräner ServiceNow-Betriebsoptionen (aus der SovRadar-Recherche, Stand 10/2026).
 # Wird der Tiefenanalyse mitgegeben, weil das Modellwissen hier veraltet sein kann.
@@ -106,9 +143,16 @@ servicenow_folge: 1 Satz, was das für einen ServiceNow-Betrieb bedeutet (z. B. 
 
 {sn_context}
 
-Ziel 3 (Profitabilität): Schätze ein, wie gut die Rahmenbedingungen für die Marge eines Beratungshauses sind, das ServiceNow-Einführung und -Umsetzung anbietet (es verkauft selbst keine Lizenzen). Bewerte jedes der folgenden Signale mit positiv / neutral / negativ / unklar:
-{profit_signals}
-Je Signal: "befund" = 1 kurzer Satz mit dem konkreten Sachverhalt (Zahlen nennen, wenn vorhanden); "zitat" = kurzes wörtliches Zitat (höchstens 25 Wörter) als Beleg, leer lassen, wenn der Text dazu nichts sagt (dann "unklar").
+Ziel 3 (Commercial Fit): Bewerte, wie attraktiv der Deal aus Margen-, Risiko- und Staffing-Sicht für ein Beratungshaus ist, das ServiceNow-Einführung, -Umsetzung und -Betrieb anbietet (es verkauft selbst keine Lizenzen). Leitfrage: Ist die Ausschreibung den Einsatz knapper Beraterkapazität wirtschaftlich wert?
+Bewerte jedes Kriterium mit positiv / neutral / negativ / unklar:
+{criteria}
+Je Kriterium: "befund" = 1 kurzer Satz mit dem konkreten Sachverhalt (Zahlen nennen, wenn vorhanden); "zitat" = kurzes wörtliches Zitat (höchstens 25 Wörter) als Beleg, leer lassen, wenn der Text dazu nichts sagt (dann "unklar"). Nichts vermuten.
+accelerators: zutreffende Margin Accelerators mit Zitat. Erlaubte Codes:
+{accelerators}
+killers: zutreffende Margin Killers mit Zitat. Erlaubte Codes:
+{killers}
+Nur angeben, was der Text belegt; PREISDOMINANZ nur bei Preisgewicht von 70 % oder mehr, FESTPREIS_UNKLAR nur bei Festpreis/Pauschale und offenem bzw. unklarem Umfang, BODY_LEASING nur bei reiner Personalgestellung ohne Lösungsverantwortung.
+strategisch: true nur, wenn das Vorhaben trotz schwacher Wirtschaftlichkeit strategisch wichtig sein kann (z. B. Leuchtturm, Ankerkunde, Einstieg in eine Rahmenvereinbarung mit großem Potenzial), mit 1 Satz in strategisch_begruendung (sonst leer).
 Kennzahlen (nur aus dem Text, nichts erfinden; geschätzt wird nur beratungsanteil_prozent):
 - auftragswert_eur: genannter Gesamtwert in EUR als ganze Zahl (Summe über alle Lose, wenn nur Loswerte genannt sind), 0 wenn nicht genannt
 - wert_art: "geschätzt" (geschätzter Auftragswert), "hoechstwert" (Höchstwert/Obergrenze eines Rahmenvertrags) oder "unbekannt"
@@ -117,8 +161,7 @@ Kennzahlen (nur aus dem Text, nichts erfinden; geschätzt wird nur beratungsante
 - beratungsanteil_prozent: geschätzter Anteil von Beratung/Umsetzung am Auftragswert (100, wenn nur Dienstleistung), -1 wenn nicht abschätzbar
 - preis_gewicht_prozent: Gewichtung des Preises in den Zuschlagskriterien, -1 wenn nicht genannt
 - rahmenvertrag_partner: Anzahl Rahmenvertragspartner (1 bei Einzelvergabe), -1 wenn unbekannt
-stufe: "hoch" = überwiegend positiv und kein negatives Signal bei Preisgewicht, Abrechnung oder Umsatzzusage; "gering" = mindestens zwei negative Signale oder ein sehr deutliches (z. B. Zuschlag nur nach Preis); "unklar" = vier oder mehr Signale unklar; sonst "mittel".
-begruendung: 1 Satz, was die Stufe hauptsächlich bestimmt.
+Den Commercial-Fit-Wert und die Einstufung berechnet das System selbst aus deinen Angaben.
 
 Regeln:
 - Nur Stichpunkte, keine langen Fließtexte, so kurz wie möglich, aber verständlich.
@@ -161,11 +204,9 @@ DEEP_SCHEMA = {
             "required": ["relevanz", "anforderungen", "belege", "servicenow_folge"],
             "additionalProperties": False,
         },
-        "profitabilitaet": {
+        "commercial": {
             "type": "object",
             "properties": {
-                "stufe": {"type": "string", "enum": ["hoch", "mittel", "gering", "unklar"]},
-                "begruendung": {"type": "string"},
                 "kennzahlen": {
                     "type": "object",
                     "properties": {
@@ -182,7 +223,7 @@ DEEP_SCHEMA = {
                                  "beratungsanteil_prozent", "preis_gewicht_prozent", "rahmenvertrag_partner"],
                     "additionalProperties": False,
                 },
-                "signale": {
+                "kriterien": {
                     "type": "object",
                     "properties": {k: {
                         "type": "object",
@@ -193,17 +234,37 @@ DEEP_SCHEMA = {
                         },
                         "required": ["bewertung", "befund", "zitat"],
                         "additionalProperties": False,
-                    } for k in PROFIT_SIGNALS},
-                    "required": list(PROFIT_SIGNALS),
+                    } for k in COMMERCIAL_CRITERIA},
+                    "required": list(COMMERCIAL_CRITERIA),
                     "additionalProperties": False,
                 },
+                "accelerators": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"code": {"type": "string", "enum": list(MARGIN_ACCELERATORS)}, "zitat": {"type": "string"}},
+                            "required": ["code", "zitat"],
+                            "additionalProperties": False,
+                        },
+                    },
+                "killers": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"code": {"type": "string", "enum": list(MARGIN_KILLERS)}, "zitat": {"type": "string"}},
+                            "required": ["code", "zitat"],
+                            "additionalProperties": False,
+                        },
+                    },
+                "strategisch": {"type": "boolean"},
+                "strategisch_begruendung": {"type": "string"},
             },
-            "required": ["stufe", "begruendung", "kennzahlen", "signale"],
+            "required": ["kennzahlen", "kriterien", "accelerators", "killers", "strategisch", "strategisch_begruendung"],
             "additionalProperties": False,
         },
     },
     "required": ["kurzbeschreibung", "fachlicher_fit", "fachlicher_fit_begruendung", "relevante_module", "custom_app_bedarf",
                  "custom_app_begruendung", "rolle_servicenow", "haupthemmnisse", "gesamtbewertung",
-                 "gesamtbewertung_begruendung", "souveraenitaet", "profitabilitaet"],
+                 "gesamtbewertung_begruendung", "souveraenitaet", "commercial"],
     "additionalProperties": False,
 }
