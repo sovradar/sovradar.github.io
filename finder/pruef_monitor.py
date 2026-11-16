@@ -52,6 +52,10 @@ Bewerte jede Angabe einzeln:
   neuer Rahmenvertrag, geänderte Eigentümer.
 - "bestaetigt": Die Seite stützt die Angabe.
 - "kein_bezug": Die Seite sagt dazu nichts. Fehlende Erwähnung ist KEINE Abweichung.
+Keine Abweichung sind außerdem: allgemeine Aussagen über Produkte Dritter, die {name} nicht nennen
+(z. B. dass ServiceNow Self-Hosted/Private Stack allgemein verfügbar ist, wenn der Steckbrief genau das als
+„nur technisch denkbar“ für {name} bewertet); Aussagen, die der Steckbrief bereits enthält oder ausdrücklich
+einordnet; reine Werbeaussagen ohne konkreten Fakt; ältere Seiteninhalte, die der Steckbrief schon berücksichtigt.
 Sei streng: Melde nur "abweichung", wenn du die Stelle wörtlich zitieren kannst. "befund" ist ein kurzer
 deutscher Satz, was genau abweicht; "zitat" ist die wörtliche Stelle (max. 300 Zeichen), sonst leer."""
 
@@ -151,7 +155,7 @@ def check_page(client, prov, page, state, force):
     prompt = PROMPT.format(name=prov["name"], stand=prov["stand"], today=now()[:10], url=url,
                            claims="\n".join(f"- {v}" for v in claims.values()), text=text[:MAX_CHARS])
     try:
-        res = _json_call(client, HAIKU, prompt, SCHEMA, 4000, "medium")
+        res = _json_call(client, HAIKU, prompt, SCHEMA, 8000, "medium")
     except ConfigError:
         raise
     except Exception as e:  # einzelne Seite nicht auswertbar – beim nächsten Lauf erneut
